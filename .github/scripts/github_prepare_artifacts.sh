@@ -17,21 +17,26 @@ if [ -f "$_root_dir/build_finished_$_target_cpu.log" ]; then
 
   cd "$_src_dir"
 
-  xattr -cs out/Default/Helium.app
+  xattr -cs "out/Default/$(cat "$_root_dir/resources/product_name.txt").app"
 
-  # Prepar the certificate for app signing
-  echo $MACOS_CERTIFICATE | base64 --decode > "$TMPDIR/certificate.p12"
+  # Idaten: フォークには署名の秘密情報が無い。空の証明書を import すると rc=1 で -e により梱包ごと落ちる
+  # (実測 2026-09-23)。証明書があるときだけキーチェーンを用意し、無ければ sign_and_package_app.sh がアドホック署名する
+  if [ -n "${MACOS_CERTIFICATE:-}" ]; then
+    # Prepar the certificate for app signing
+    echo $MACOS_CERTIFICATE | base64 --decode > "$TMPDIR/certificate.p12"
 
-  security create-keychain -p "$MACOS_CI_KEYCHAIN_PWD" build.keychain
-  security default-keychain -s build.keychain
-  security unlock-keychain -p "$MACOS_CI_KEYCHAIN_PWD" build.keychain
-  security import "$TMPDIR/certificate.p12" -k build.keychain -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
-  security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$MACOS_CI_KEYCHAIN_PWD" build.keychain
+    security create-keychain -p "$MACOS_CI_KEYCHAIN_PWD" build.keychain
+    security default-keychain -s build.keychain
+    security unlock-keychain -p "$MACOS_CI_KEYCHAIN_PWD" build.keychain
+    security import "$TMPDIR/certificate.p12" -k build.keychain -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
+    security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$MACOS_CI_KEYCHAIN_PWD" build.keychain
 
-  if ! [ -z "${PROD_MACOS_SPECIAL_ENTITLEMENTS_PROFILE_B64:-}" ]; then
-    export PROD_MACOS_SPECIAL_ENTITLEMENTS_PROFILE_PATH=$(mktemp)
-    echo "$PROD_MACOS_SPECIAL_ENTITLEMENTS_PROFILE_B64" \
-      | base64 --decode > "$PROD_MACOS_SPECIAL_ENTITLEMENTS_PROFILE_PATH"
+    if ! [ -z "${PROD_MACOS_SPECIAL_ENTITLEMENTS_PROFILE_B64:-}" ]; then
+      export PROD_MACOS_SPECIAL_ENTITLEMENTS_PROFILE_PATH=$(mktemp)
+      echo "$PROD_MACOS_SPECIAL_ENTITLEMENTS_PROFILE_B64" \
+        | base64 --decode > "$PROD_MACOS_SPECIAL_ENTITLEMENTS_PROFILE_PATH"
+    fi
+
   fi
 
   export OUT_DMG_PATH="$_root_dir/$_file_name"
@@ -56,21 +61,27 @@ if [ -f "$_root_dir/build_finished_$_target_cpu.log" ]; then
   mkdir -p release_asset
   mv "$_file_name" release_asset/
 
-  if [ "$_target_cpu" = "x86_64" ]; then
-    DELTA_ARG="--x86"
+  # Idaten: Sparkle の差分は本家の過去版と比べて作る。自動アップデータを持たないフォークでは作らない
+  if [ -n "${PROD_MACOS_SPARKLE_ED_PUB_KEY:-}" ]; then
+    if [ "$_target_cpu" = "x86_64" ]; then
+      DELTA_ARG="--x86"
+    else
+      DELTA_ARG="--arm"
+    fi
+
+    PATH="$_src_dir/out/Default:$PATH" python3 "$_root_dir/devutils/generate_sparkle_deltas.py" \
+      "$DELTA_ARG" "./release_asset/$_file_name" \
+      --out ./release_asset
+
+    {
+      echo 'deltas<<EOF'
+      find ./release_asset/ -name '*.delta'
+      echo EOF
+    } >> "$GITHUB_OUTPUT"
+
   else
-    DELTA_ARG="--arm"
+    echo "deltas=" >> "$GITHUB_OUTPUT"
   fi
-
-  PATH="$_src_dir/out/Default:$PATH" python3 "$_root_dir/devutils/generate_sparkle_deltas.py" \
-    "$DELTA_ARG" "./release_asset/$_file_name" \
-    --out ./release_asset
-
-  {
-    echo 'deltas<<EOF'
-    find ./release_asset/ -name '*.delta'
-    echo EOF
-  } >> "$GITHUB_OUTPUT"
 
   ls -kahl release_asset/
   du -hs release_asset/

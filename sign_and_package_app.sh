@@ -1,8 +1,9 @@
 #!/bin/bash -eux
 
 _root_dir="$(dirname "$(greadlink -f "$0")")"
-_app="out/Default/Helium.app"
-_packaging="out/Default/Helium Packaging"
+_product="$(cat "$_root_dir/resources/product_name.txt")"
+_app="out/Default/$_product.app"
+_packaging="out/Default/$_product Packaging"
 
 if [ -n "${MACOS_CERTIFICATE_NAME:-}" ]; then
   if [ -n "${PROD_MACOS_SPECIAL_ENTITLEMENTS_PROFILE_PATH:-}" ]; then
@@ -30,7 +31,7 @@ if [ -n "${MACOS_CERTIFICATE_NAME:-}" ]; then
     --disable-packaging --notarize \
     "${NOTARY_ARGS[@]}"
 
-  _app="out/Default/signed/stable/Helium.app"
+  _app="out/Default/signed/stable/$_product.app"
 else
   echo "warn: MACOS_CERTIFICATE_NAME is missing; skipping notarization" >&2
   codesign --force --deep --sign - "$_app"
@@ -47,7 +48,7 @@ fi
 chrome/installer/mac/pkg-dmg \
   --sourcefile --source "$_app" \
   --target "$OUT_DMG_PATH" \
-  --volname Helium --format ULMO \
+  --volname "$_product" --format ULMO \
   --icon "$_app/Contents/Resources/app.icns" \
   --symlink /Applications:/Applications \
   --mkdir .background \
