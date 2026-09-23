@@ -28,6 +28,13 @@ jobs:
   build_job:
     name: Build Helium for macOS
     runs-on: ${{ inputs.os }}
+    env:
+      # Idaten: 上流は自前の WebDAV キャッシュを secrets で渡している。フォークにはそれが無く、
+      # 代わりの GitHub Actions キャッシュ経路は run ステップに接続情報が渡らないため、
+      # sccache が起動できず全コンパイルが落ちた(実測 2026-09-23: cache url for ghac not found)。
+      # SCCACHE_* が1つでもあれば github_build.sh は GHA 経路に入らないので、ローカルディスクのキャッシュにする
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
+      SCCACHE_CACHE_SIZE: 20G
     outputs:
       status: ${{ steps.build.outputs.status }}
     steps:
