@@ -1,4 +1,6 @@
 #!/bin/bash -eux
+# Idaten: パイプの途中(tar)が失敗しても zstd の成功で見逃さないように
+set -o pipefail
 # Simple script for packing Helium macOS build artifacts on GitHub Actions
 
 _target_cpu="${1:-x86_64}"
@@ -90,7 +92,9 @@ fi
 gsync --file-system "$_src_dir"
 
 # Needs to be compressed to stay below GitHub's upload limit 2 GB (?!) 2020-11-24; used to be  5-8GB (?)
-tar -C build -c -f - src | zstd -vv -11 -T0 -o build_src.tar.zst
+# Idaten: 既定の tar 形式は更新時刻の1秒未満を切り捨てる(手元で実測: ...582315301 ns → ...000000000 ns)。
+# siso はナノ秒の更新時刻で「作り終えたか」を照合するので、切り捨てると次の段でほぼ全部を作り直す。pax 形式はナノ秒を保つ
+tar --format=pax -C build -c -f - src | zstd -vv -11 -T0 -o build_src.tar.zst
 
 # Idaten: siso は時間切れの打ち切り(SIGTERM)の後、次の段で前の段の成果物をほぼ全部作り直す
 # (実測 2026-09-24: 2段目でコンパイルした 19,750 個のうち 17,306 個が1段目と同じ)。
@@ -100,7 +104,7 @@ _sums=(./build_src.tar.zst)
 if [ -n "${SCCACHE_DIR:-}" ] && [ -d "$SCCACHE_DIR" ]; then
   sccache --show-stats
   sccache --stop-server || echo "warn: sccache server was not running"
-  tar -C "$(dirname "$SCCACHE_DIR")" -c -f - "$(basename "$SCCACHE_DIR")" | zstd -vv -3 -T0 -o sccache.tar.zst
+  tar --format=pax -C "$(dirname "$SCCACHE_DIR")" -c -f - "$(basename "$SCCACHE_DIR")" | zstd -vv -3 -T0 -o sccache.tar.zst
   _sums+=(./sccache.tar.zst)
 fi
 sha256sum "${_sums[@]}" | tee ./sums.txt
