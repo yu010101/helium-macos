@@ -26,3 +26,4 @@ helium/macos/helium-immersive-fullscreen.patch
 helium/macos/fix-history-swiper-lifetime.patch
 
 idaten/macos/idaten-branding.patch
+idaten/core/idaten-product-name.patch
