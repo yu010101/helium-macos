@@ -1,0 +1,373 @@
+--- a/chrome/browser/extensions/BUILD.gn
++++ b/chrome/browser/extensions/BUILD.gn
+@@ -612,6 +612,7 @@ source_set("extensions") {
+     "//components/user_prefs",
+     "//components/vector_icons",
+     "//components/extstore_fixups",
++    "//components/idaten_hibernate",
+     "//content/public/browser",
+     "//extensions/browser",
+     "//extensions/browser:crx_installer",
+--- a/chrome/browser/extensions/chrome_component_extension_resource_manager.cc
++++ b/chrome/browser/extensions/chrome_component_extension_resource_manager.cc
+@@ -27,6 +27,7 @@
+ #include "chrome/grit/theme_resources.h"
+ #include "components/contextual_tasks/public/features.h"
+ #include "components/extstore_fixups/resources/grit/extstore_fixups_resources_map.h"
++#include "components/idaten_hibernate/resources/grit/idaten_hibernate_resources_map.h"
+ #include "components/omnibox/common/omnibox_features.h"
+ #include "content/public/browser/browser_thread.h"
+ #include "extensions/buildflags/buildflags.h"
+@@ -120,6 +121,7 @@ ChromeComponentExtensionResourceManager::Data::Data() {
+   }
+   AddComponentResourceEntries(kUblockResources);
+   AddComponentResourceEntries(kExtstoreFixupsResources);
++  AddComponentResourceEntries(kIdatenHibernateResources);
+ 
+ #if !BUILDFLAG(IS_ANDROID)
+   if (base::FeatureList::IsEnabled(features::kIndigo)) {
+--- a/chrome/browser/extensions/component_extensions_allowlist/allowlist.cc
++++ b/chrome/browser/extensions/component_extensions_allowlist/allowlist.cc
+@@ -21,6 +21,8 @@
+ #include "components/extstore_fixups/extension_ids.h"
+ #include "components/extstore_fixups/resources/grit/extstore_fixups_resources.h"
+ #include "components/helium_services/extension_ids.h"
++#include "components/idaten_hibernate/extension_ids.h"
++#include "components/idaten_hibernate/resources/grit/idaten_hibernate_resources.h"
+ #include "extensions/buildflags/buildflags.h"
+ #include "extensions/common/constants.h"
+ #include "printing/buildflags/buildflags.h"
+@@ -46,6 +48,7 @@ bool IsComponentExtensionAllowlisted(const std::string& extension_id) {
+       extension_misc::kPdfExtensionId,
+       helium::kUBlockOriginComponentId,
+       helium::kExtstoreFixupsExtensionId,
++      idaten::kIdatenHibernateExtensionId,
+ #if BUILDFLAG(IS_CHROMEOS)
+       extension_misc::kAssessmentAssistantExtensionId,
+       extension_misc::kAccessibilityCommonExtensionId,
+@@ -110,6 +113,7 @@ bool IsComponentExtensionAllowlisted(int manifest_resource_id) {
+     case IDR_WEBSTORE_MANIFEST:
+     case IDR_UBLOCK_MANIFEST_JSON:
+     case IDR_EXTSTORE_FIXUPS_MANIFEST_JSON:
++    case IDR_IDATEN_HIBERNATE_MANIFEST_JSON:
+ 
+ #if BUILDFLAG(IS_CHROMEOS)
+     // Separate ChromeOS list, as it is quite large.
+--- a/chrome/browser/extensions/component_loader.cc
++++ b/chrome/browser/extensions/component_loader.cc
+@@ -45,6 +45,7 @@
+ #include "components/omnibox/common/omnibox_features.h"
+ #include "components/version_info/version_info.h"
+ #include "components/extstore_fixups/resources/grit/extstore_fixups_resources.h"
++#include "components/idaten_hibernate/resources/grit/idaten_hibernate_resources.h"
+ #include "content/public/browser/browser_thread.h"
+ #include "content/public/common/content_switches.h"
+ #include "extensions/browser/extension_file_task_runner.h"
+@@ -484,6 +485,11 @@ void ComponentLoader::AddExtstoreFixups() {
+       base::FilePath(FILE_PATH_LITERAL("extstore_fixups")));
+ }
+ 
++void ComponentLoader::AddIdatenHibernate() {
++  Add(IDR_IDATEN_HIBERNATE_MANIFEST_JSON,
++      base::FilePath(FILE_PATH_LITERAL("idaten_hibernate")));
++}
++
+ #if BUILDFLAG(IS_CHROMEOS)
+ void ComponentLoader::AddChromeApp() {
+   AddWithNameAndDescription(
+@@ -563,6 +569,7 @@ void ComponentLoader::AddDefaultComponentExtensions(
+     AddWebStoreApp();
+     AddUBlock();
+     AddExtstoreFixups();
++    AddIdatenHibernate();
+ #if BUILDFLAG(IS_CHROMEOS)
+     AddChromeApp();
+ #endif  // BUILDFLAG(IS_CHROMEOS)
+--- a/chrome/browser/extensions/component_loader.h
++++ b/chrome/browser/extensions/component_loader.h
+@@ -224,6 +224,7 @@ class ComponentLoader : public KeyedService {
+   void AddWebStoreApp();
+   void AddUBlock();
+   void AddExtstoreFixups();
++  void AddIdatenHibernate();
+ 
+ #if BUILDFLAG(IS_CHROMEOS)
+   void AddChromeApp();
+--- a/chrome/chrome_paks.gni
++++ b/chrome/chrome_paks.gni
+@@ -134,6 +134,7 @@ template("chrome_extra_paks") {
+       "$root_gen_dir/components/components_resources.pak",
+       "$root_gen_dir/components/crashes_resources.pak",
+       "$root_gen_dir/components/extstore_fixups/resources/extstore_fixups_resources.pak",
++      "$root_gen_dir/components/idaten_hibernate/resources/idaten_hibernate_resources.pak",
+       "$root_gen_dir/components/flags_ui_resources.pak",
+       "$root_gen_dir/components/internal_debug_pages_disabled_resources.pak",
+       "$root_gen_dir/components/metrics/metrics_server_urls.pak",
+@@ -172,6 +173,7 @@ template("chrome_extra_paks") {
+       "//chrome/common:resources",
+       "//components/resources",
+       "//components/extstore_fixups",
++      "//components/idaten_hibernate",
+       "//content:content_resources",
+       "//content/browser/resources",
+       "//mojo/public/js:resources",
+--- /dev/null
++++ b/components/idaten_hibernate/BUILD.gn
+@@ -0,0 +1,41 @@
++# Copyright 2026 The Idaten Authors
++# You can use, redistribute, and/or modify this source code under
++# the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++import("//ui/webui/resources/tools/generate_grd.gni")
++import("//tools/grit/grit_rule.gni")
++
++generated_grd = "$target_gen_dir/resources.grd"
++
++generate_grd("idaten_hibernate_grd") {
++    out_grd = generated_grd
++
++    grd_prefix = "idaten_hibernate"
++    resource_path_prefix = "idaten_hibernate"
++
++    input_files_base_dir = rebase_path("extension", "//")
++    input_files = [
++        "manifest.json",
++        "background.js",
++        "policy.js",
++        "options.html",
++        "options.js",
++    ]
++}
++
++grit("idaten_hibernate") {
++    source = generated_grd
++
++    # Required because the .grd is generated.
++    enable_input_discovery_for_gn_analyze = false
++    output_dir = "$target_gen_dir/resources"
++
++    outputs = [
++        "grit/idaten_hibernate_resources.h",
++        "grit/idaten_hibernate_resources_map.cc",
++        "grit/idaten_hibernate_resources_map.h",
++        "idaten_hibernate_resources.pak"
++    ]
++
++    deps = [":idaten_hibernate_grd"]
++}
+--- /dev/null
++++ b/components/idaten_hibernate/extension/background.js
+@@ -0,0 +1,64 @@
++import { DEFAULTS, pickTabsToDiscard } from './policy.js';
++
++async function settings() {
++  return { ...DEFAULTS, ...(await chrome.storage.sync.get(DEFAULTS)) };
++}
++
++// ページの中で「再生中か・入力途中か」を調べる。Swift 版の hibernate() の判定と同じ式。
++// 返事が来ない(読み込み中など)タブは busy 扱いにして今回は眠らせない — 次の巡回で再挑戦(Swift 版の 3 秒打ち切りと同じ考え)
++async function busyTabs(tabIds) {
++  const busy = new Set();
++  await Promise.all(tabIds.map(async id => {
++    try {
++      const [r] = await Promise.race([
++        chrome.scripting.executeScript({
++          target: { tabId: id },
++          func: () => {
++            const playing = [...document.querySelectorAll('video,audio')].some(m => !m.paused && !m.ended);
++            const a = document.activeElement;
++            const editing = !!a && (a.isContentEditable || ((a.tagName === 'TEXTAREA' || a.tagName === 'INPUT') && (a.value || '').length > 0));
++            return playing || editing;
++          },
++        }),
++        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 3000)),
++      ]);
++      if (r?.result) busy.add(id);
++    } catch { busy.add(id); }
++  }));
++  return busy;
++}
++
++let running = false;
++async function enforce(reason) {
++  if (running) return;   // 同時に何本も走らせない(Swift 版で判定要求が積み上がって本体が膨張した事故の再発防止)
++  running = true;
++  try {
++    const s = await settings();
++    const tabs = await chrome.tabs.query({});
++    const bg = tabs.filter(t => !t.active && !t.discarded && !t.pinned && !t.audible && /^https?:/.test(t.url || ''));
++    const busy = await busyTabs(bg.map(t => t.id));
++    const ids = pickTabsToDiscard(tabs, s, busy, Date.now());
++    // 断られた理由は握り潰さない。「選んだのに眠らなかった」を後から追えるようにする
++    const failed = [];
++    let done = 0;
++    for (const id of ids) {
++      try { await chrome.tabs.discard(id); done++; }
++      catch (e) { failed.push(String(e).slice(0, 120)); }
++    }
++    await chrome.storage.local.set({ lastRun: {
++      at: Date.now(), reason, tabs: tabs.length, background: bg.length, busy: busy.size,
++      picked: ids.length, discarded: done, failed, settings: s,
++    } });
++  } finally { running = false; }
++}
++
++// Swift 版と同じく、タブを切り替えた/増やした瞬間に予算を適用する(定期巡回を待たない)
++chrome.tabs.onActivated.addListener(() => enforce('activated'));
++chrome.tabs.onCreated.addListener(() => enforce('created'));
++chrome.alarms.create('idaten-sweep', { periodInMinutes: 1 });
++chrome.alarms.onAlarm.addListener(a => { if (a.name === 'idaten-sweep') enforce('sweep'); });
++chrome.runtime.onInstalled.addListener(() => enforce('installed'));
++chrome.runtime.onMessage.addListener((m, _s, reply) => {
++  if (m === 'enforce') enforce('manual').then(() => reply(true));
++  return true;
++});
+--- /dev/null
++++ b/components/idaten_hibernate/extension/manifest.json
+@@ -0,0 +1,25 @@
++{
++  "manifest_version": 3,
++  "name": "Idaten",
++  "version": "0.1.0",
++  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvXDkASMhBub2Mp0yf+rCA2/pvpXEkzptmOFMRMDMyDTpUY/RuBVxOJCU/HhmxRMJt2QMyHDQTtDvw01GrZ1aUc5kAYILVxfT9nCYQkXWC8MY6bfPWkOCp+ONB0V6802/sJkrkvOeJ8c/oP+BzsHBnImFhvZHVNL2XqQNh+xI966vJxWKZLUpOunAvVQUxWW4IrgJYSf4lqU7SFE7Cf4sVcRAiTGUp670u+YK/6oSTO1wPpmOOyawr/DkB6uizMw+9SyORhfp8NXK3UtHZPfq5NUHVyeoCdNamxA0n8IjnFwtJupaaEJ86ehCa29TT/FV3jXHAAuNKpyLTw/tp9GO1QIDAQAB",
++  "description": "Helium(Chromium)を Idaten にする: 起きている背景タブの数に上限を設けて休眠させる。再生中・入力中のタブは眠らせない",
++  "permissions": [
++    "tabs",
++    "storage",
++    "alarms",
++    "scripting"
++  ],
++  "host_permissions": [
++    "<all_urls>"
++  ],
++  "background": {
++    "service_worker": "background.js",
++    "type": "module"
++  },
++  "options_page": "options.html",
++  "action": {
++    "default_title": "Idaten: 休眠の状態",
++    "default_popup": "options.html"
++  }
++}
+--- /dev/null
++++ b/components/idaten_hibernate/extension/options.html
+@@ -0,0 +1,19 @@
++<!doctype html><meta charset="utf-8"><title>Idaten</title>
++<style>
++  :root { color-scheme: light dark; font: 13px -apple-system, system-ui, sans-serif; }
++  body { margin: 14px; min-width: 300px; }
++  label { display: block; margin: 10px 0 4px; font-weight: 600; }
++  input, textarea { width: 100%; box-sizing: border-box; font: inherit; }
++  textarea { height: 70px; }
++  .row { display: flex; gap: 8px; margin-top: 12px; }
++  #status { color: GrayText; margin-top: 10px; font-size: 12px; }
++</style>
++<label for="budget">起きている背景タブの上限</label>
++<input id="budget" type="number" min="1" max="50">
++<label for="idle">使っていないタブを眠らせるまでの分(0で無効)</label>
++<input id="idle" type="number" min="0" max="1440">
++<label for="never">眠らせないドメイン(1行に1つ。サブドメインも含む)</label>
++<textarea id="never" placeholder="meet.google.com&#10;zoom.us"></textarea>
++<div class="row"><button id="save">保存</button><button id="now">今すぐ適用</button></div>
++<div id="status"></div>
++<script src="options.js" type="module"></script>
+--- /dev/null
++++ b/components/idaten_hibernate/extension/options.js
+@@ -0,0 +1,21 @@
++import { DEFAULTS } from './policy.js';
++const $ = id => document.getElementById(id);
++const s = await chrome.storage.sync.get(DEFAULTS);
++$('budget').value = s.budget; $('idle').value = s.idleMinutes; $('never').value = s.neverDiscard.join('\n');
++async function show() {
++  const { lastRun } = await chrome.storage.local.get('lastRun');
++  const tabs = await chrome.tabs.query({});
++  const asleep = tabs.filter(t => t.discarded).length;
++  $('status').textContent = `タブ ${tabs.length} 枚 / 休眠中 ${asleep} 枚` +
++    (lastRun ? ` / 最終適用 ${new Date(lastRun.at).toLocaleTimeString()}(${lastRun.discarded}枚を休眠)` : '');
++}
++$('save').onclick = async () => {
++  await chrome.storage.sync.set({
++    budget: Math.max(1, +$('budget').value || DEFAULTS.budget),
++    idleMinutes: Math.max(0, +$('idle').value || 0),
++    neverDiscard: $('never').value.split('\n').map(x => x.trim()).filter(Boolean),
++  });
++  $('status').textContent = '保存しました';
++};
++$('now').onclick = async () => { await chrome.runtime.sendMessage('enforce'); show(); };
++show();
+--- /dev/null
++++ b/components/idaten_hibernate/extension/policy.js
+@@ -0,0 +1,39 @@
++// 休眠の判断だけを純関数にしておく(chrome.* に触れない)。node でそのまま試験できるように
++// Idaten(Swift版)の enforceAwakeBudget / hibernateIdleTabs と同じ規則:
++//  - 選択中・固定・休眠済み・音が出ているタブは対象外
++//  - 起きている背景タブが budget を超えたら、最後に見た時刻が古い順に超過分を眠らせる
++//  - idleMinutes 以上見ていない背景タブも眠らせる(0 なら無効)
++//  - 再生中(ミュート再生を含む)・入力途中のタブは、予算を超えても眠らせない(Swift版の force:false と同じ)
++//  - 例外ドメイン(と、そのサブドメイン)は眠らせない
++export const DEFAULTS = { budget: 6, idleMinutes: 10, neverDiscard: [] };   // Swift 版 Settings の既定と同じ
++
++export function hostMatches(host, list) {
++  host = (host || '').toLowerCase();
++  return list.some(d => { d = d.toLowerCase().trim(); return d && (host === d || host.endsWith('.' + d)); });
++}
++
++/** tabs: {id, active, pinned, discarded, audible, lastAccessed, url}[] / busy: Set<tabId>(再生中・入力中) */
++export function pickTabsToDiscard(tabs, settings, busy, now) {
++  const s = { ...DEFAULTS, ...settings };
++  const candidates = tabs.filter(t => {
++    if (t.active || t.pinned || t.discarded || t.audible || busy.has(t.id)) return false;
++    let host = '';
++    try { host = new URL(t.url).host; } catch { return false; }   // chrome:// 等は眠らせない
++    if (!/^https?:/.test(t.url)) return false;
++    return !hostMatches(host, s.neverDiscard);
++  });
++  // 背景で起きているタブの数。固定タブは利用者が意図して置いているので数えない(Swift 版には固定タブが無い)。
++  // 再生中・入力中は数に入れる — 眠らせられない分は、眠らせられる中から古い順に補って予算を守る
++  // (Swift 版は最古から超過分だけを見て、眠らせられないものは飛ばすだけだった。こちらの方が予算を守る)
++  const awakeBackground = tabs.filter(t => !t.active && !t.discarded && !t.pinned);
++  const pick = new Set();
++  const overflow = awakeBackground.length - s.budget;
++  if (overflow > 0) {
++    [...candidates].sort((a, b) => (a.lastAccessed ?? 0) - (b.lastAccessed ?? 0))
++      .slice(0, overflow).forEach(t => pick.add(t.id));
++  }
++  if (s.idleMinutes > 0) {
++    for (const t of candidates) if (now - (t.lastAccessed ?? now) > s.idleMinutes * 60000) pick.add(t.id);
++  }
++  return [...pick];
++}
+--- /dev/null
++++ b/components/idaten_hibernate/extension_ids.h
+@@ -0,0 +1,17 @@
++// Copyright 2026 The Idaten Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#ifndef COMPONENTS_IDATEN_HIBERNATE_EXTENSION_IDS_H_
++#define COMPONENTS_IDATEN_HIBERNATE_EXTENSION_IDS_H_
++
++namespace idaten {
++
++// Derived from the "key" in components/idaten_hibernate/extension/manifest.json
++// (SHA-256 of the public key DER, first 16 bytes, hex digits mapped to a-p).
++inline constexpr char kIdatenHibernateExtensionId[] =
++    "aacggnjhnfocojdoneibokaddkjnmghn";
++
++}  // namespace idaten
++
++#endif  // COMPONENTS_IDATEN_HIBERNATE_EXTENSION_IDS_H_
+--- a/tools/gritsettings/resource_ids.spec
++++ b/tools/gritsettings/resource_ids.spec
+@@ -1410,6 +1410,10 @@
+    "META": {"sizes": {"includes": [48],}},
+     "includes": [7510],
+   },
++  "<(SHARED_INTERMEDIATE_DIR)/components/idaten_hibernate/resources.grd": {
++   "META": {"sizes": {"includes": [20],}},
++    "includes": [7520],
++  },
+   # END components/ section.
+ 
+   # START ios/ section.
