@@ -36,6 +36,10 @@ prepare_sources() {
   python3 "$_main_repo/utils/domain_substitution.py" apply -r "$_main_repo/domain_regex.list" -f "$_main_repo/domain_substitution.list" "$_src_dir"
   python3 "$_main_repo/utils/name_substitution.py" --sub -t "$_src_dir"
   python3 "$_main_repo/utils/i18n_apply.py" -t "$_src_dir"
+  # Idaten: on-screen "Helium" -> "Idaten" (after name_substitution and
+  # i18n_apply, so Chromium's, Helium's and the onboarding strings are all
+  # covered and translation ids are moved with the text).
+  python3 "$_root_dir/devutils/idaten_name_substitution.py" -t "$_src_dir"
   python3 "$_main_repo/utils/helium_version.py" \
     --tree "$_main_repo" --platform-tree "$_root_dir" --chromium-tree "$_src_dir"
 
