@@ -29,3 +29,4 @@ idaten/macos/idaten-branding.patch
 idaten/core/idaten-product-name.patch
 idaten/core/idaten-hibernate-component.patch
 idaten/core/idaten-webkit-tab-poc.patch
+idaten/macos/idaten-signing-fixes.patch

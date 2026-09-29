@@ -45,6 +45,8 @@ if [ -n "${MACOS_CERTIFICATE_NAME:-}" ]; then
     "${NOTARY_ARGS[@]}"
 
   _app="out/Default/signed/stable/$_product.app"
+  # Idaten: 公証・ステープルの後に Gatekeeper で確かめる(署名直後の検査は公証前なので止めてある)
+  spctl -a -vv -t exec "$_app"
 else
   echo "warn: MACOS_CERTIFICATE_NAME is missing; skipping notarization" >&2
   codesign --force --deep --sign - "$_app"
