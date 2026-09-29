@@ -543,7 +543,7 @@
 +  "name": "Idaten",
 +  "version": "0.3.0",
 +  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvXDkASMhBub2Mp0yf+rCA2/pvpXEkzptmOFMRMDMyDTpUY/RuBVxOJCU/HhmxRMJt2QMyHDQTtDvw01GrZ1aUc5kAYILVxfT9nCYQkXWC8MY6bfPWkOCp+ONB0V6802/sJkrkvOeJ8c/oP+BzsHBnImFhvZHVNL2XqQNh+xI966vJxWKZLUpOunAvVQUxWW4IrgJYSf4lqU7SFE7Cf4sVcRAiTGUp670u+YK/6oSTO1wPpmOOyawr/DkB6uizMw+9SyORhfp8NXK3UtHZPfq5NUHVyeoCdNamxA0n8IjnFwtJupaaEJ86ehCa29TT/FV3jXHAAuNKpyLTw/tp9GO1QIDAQAB",
-+  "description": "Helium(Chromium)を Idaten にする: 起きている背景タブの数に上限を設けて休眠させる。再生中・入力中・通話中・機器接続中・AI 操作中のタブは眠らせない。メモリ予算を超えそうなときも古い背景タブから眠らせる",
++  "description": "Idaten の休眠: 起きている背景タブの数に上限を設けて休眠させる。再生中・入力中・通話中・機器接続中・AI 操作中のタブは眠らせない。メモリ予算を超えそうなときも古い背景タブから眠らせる",
 +  "permissions": [
 +    "tabs",
 +    "storage",
