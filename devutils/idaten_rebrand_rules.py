@@ -13,7 +13,8 @@ Policy (decided 2026-09-29):
     "helium://", "helium.computer", "kHeliumFoo", "IDS_HELIUM_X" never match.
  3. "Helium services" (servers operated by imput) are not simply renamed:
     the provider is stated. Titles use the long form, running text the short
-    form. The imput partner program is treated the same way.
+    form. The imput partner program is treated the same way in text, but its
+    onboarding badge is not shown at all (see the PARTNER rules below).
 """
 
 OLD = 'Helium'
@@ -86,6 +87,12 @@ REWRITES = {
         'ja': [(r'Helium サービスの独自インスタンス', '接続サービス(Helium services)の独自インスタンス'),
                (r'Helium の設定', 'Idaten の設定')],
     },
+    # Partner badge: NOT shown (decided 2026-09-29). The component that
+    # renders it is emptied by patches/idaten/core/
+    # idaten-remove-onboarding-partner.patch. The two messages still exist in
+    # helium_onboarding_strings.grdp (and in the pak via loadTimeData), so
+    # they stay classified here: dropping these rules would trip PHRASE_GUARD
+    # ("Helium Partner") and fail the stage. The text is never rendered.
     'IDS_HELIUM_ONBOARDING_PARTNER_TITLE': {
         'en': [(r'Helium Partner', 'imput / Helium partner')],
         'ja': [(r'Helium パートナー', 'imput / Helium のパートナー')],

@@ -1,0 +1,49 @@
+--- a/components/helium_onboarding/src/components/HeliumPartner.svelte
++++ b/components/helium_onboarding/src/components/HeliumPartner.svelte
+@@ -1,39 +1,7 @@
+-<script lang="ts">
+-    import { HeliumLogo, Tooltip } from "@imput/helium-prism";
+-    import { s } from "../lib/strings";
+-</script>
+-
+-<div class="helium-partner">
+-    <Tooltip>
+-        {#snippet anchor()}
+-            <div class="helium-partner-badge">
+-                <HeliumLogo height="13px" />
+-                {s.partner.title}
+-            </div>
+-        {/snippet}
+-        {#snippet content()}
+-            {s.partner.tooltip}
+-        {/snippet}
+-    </Tooltip>
+-</div>
+-
+-<style>
+-    .helium-partner {
+-        display: flex;
+-        position: relative;
+-        width: fit-content;
+-        cursor: help;
+-    }
+-
+-    .helium-partner-badge {
+-        display: flex;
+-        align-items: center;
+-        gap: 4px;
+-        font-size: 13.5px;
+-        font-weight: 500;
+-        width: fit-content;
+-        line-height: 0;
+-        padding: 2px 0;
+-
+-    }
+-</style>
++<!--
++    Idaten: the "Helium Partner" badge and its tooltip ("Paying for this
++    service will support the development of Helium.") are not shown.
++    This component renders nothing wherever it is used, so a partner flag
++    set upstream (PasswordManagerInfo.partner, or any new call site) never
++    puts the badge on screen. The strings stay in the .grdp, unused.
++-->
