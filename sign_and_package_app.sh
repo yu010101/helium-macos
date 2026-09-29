@@ -18,11 +18,24 @@ if [ -n "${MACOS_CERTIFICATE_NAME:-}" ]; then
     NOTARY_ARGS+=("--notary-arg=--keychain=$HOME/Library/Keychains/build.keychain-db")
   fi
 
-  xcrun notarytool \
-    "${CREDENTIAL_ARGS[@]}" \
-    --apple-id "$PROD_MACOS_NOTARIZATION_APPLE_ID" \
-    --team-id "$PROD_MACOS_NOTARIZATION_TEAM_ID" \
-    --password "$PROD_MACOS_NOTARIZATION_PWD"
+  # Idaten: App 用パスワードの代わりに App Store Connect の API キーでも認証できるようにする
+  # (鍵ファイルを渡すだけで、パスワードを人が扱わずに済む)。API キーがあればそちらを優先
+  if [ -n "${PROD_MACOS_NOTARIZATION_API_KEY_B64:-}" ]; then
+    _api_key="$(mktemp -d)/AuthKey_${PROD_MACOS_NOTARIZATION_API_KEY_ID}.p8"
+    printf '%s' "$PROD_MACOS_NOTARIZATION_API_KEY_B64" | base64 --decode > "$_api_key"
+    xcrun notarytool \
+      "${CREDENTIAL_ARGS[@]}" \
+      --key "$_api_key" \
+      --key-id "$PROD_MACOS_NOTARIZATION_API_KEY_ID" \
+      --issuer "$PROD_MACOS_NOTARIZATION_API_ISSUER"
+    rm -f "$_api_key"
+  else
+    xcrun notarytool \
+      "${CREDENTIAL_ARGS[@]}" \
+      --apple-id "$PROD_MACOS_NOTARIZATION_APPLE_ID" \
+      --team-id "$PROD_MACOS_NOTARIZATION_TEAM_ID" \
+      --password "$PROD_MACOS_NOTARIZATION_PWD"
+  fi
 
   python3 "$_packaging/sign_chrome.py" \
     --input out/Default \
@@ -59,6 +72,6 @@ chrome/installer/mac/pkg-dmg \
 if [ -n "${MACOS_CERTIFICATE_NAME:-}" ]; then
   codesign \
     --sign "$MACOS_CERTIFICATE_NAME" \
-    --identifier net.imput.helium --force \
+    --identifier dev.idaten.chromium --force \
     "$OUT_DMG_PATH"
 fi
