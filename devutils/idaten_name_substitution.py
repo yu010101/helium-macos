@@ -122,8 +122,12 @@ def parse(text):
     return xml.fromstring(text, hutil.get_parser())
 
 
-def serialize(root):
-    return xml.tostring(root, encoding='unicode', xml_declaration=True)
+def serialize(root, original):
+    # 元のファイルに XML 宣言が無ければ付けない。helium_onboarding の generate-i18n.mts は先頭の要素が
+    # <grit-part> であることを前提にしており、宣言が付くと「expected <grit-part> root element」で落ちる
+    # (run 36554754738 で実際に落ちた)
+    decl = original.lstrip().startswith('<?xml')
+    return xml.tostring(root, encoding='unicode', xml_declaration=decl)
 
 
 class Stage:  # pylint: disable=too-many-instance-attributes
@@ -208,7 +212,7 @@ class Stage:  # pylint: disable=too-many-instance-attributes
                 self.fp_map[old_fp] = new_fp
             if changed:
                 self.n['grd_files'] += 1
-                self.stage_write(path, original, serialize(root))
+                self.stage_write(path, original, serialize(root, original))
         for name, hits in self.rewrite_hits.items():
             if not hits:
                 self.errors.append(f'rewrite target {name} not found in any .grd/.grdp')
@@ -254,7 +258,7 @@ class Stage:  # pylint: disable=too-many-instance-attributes
                 seen.add(nid)
             if changed:
                 self.n['xtb_files'] += 1
-                self.stage_write(path, original, serialize(root))
+                self.stage_write(path, original, serialize(root, original))
 
     # -- code --------------------------------------------------------------
     def substitute_code(self):
