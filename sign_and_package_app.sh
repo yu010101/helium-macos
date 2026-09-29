@@ -76,4 +76,9 @@ if [ -n "${MACOS_CERTIFICATE_NAME:-}" ]; then
     --sign "$MACOS_CERTIFICATE_NAME" \
     --identifier dev.idaten.chromium --force \
     "$OUT_DMG_PATH"
+  # Idaten: dmg 自体も公証してステープルする(中のアプリだけ公証済みだと、ダウンロードした dmg を開くときに
+  # Gatekeeper が「Unnotarized Developer ID」と判定する。run 36549347922 の dmg で確認)
+  xcrun notarytool submit "$OUT_DMG_PATH" "${NOTARY_ARGS[@]/#--notary-arg=/}" --wait
+  xcrun stapler staple "$OUT_DMG_PATH"
+  spctl -a -vv -t open --context context:primary-signature "$OUT_DMG_PATH"
 fi
