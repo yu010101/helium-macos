@@ -1,0 +1,467 @@
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -2378,6 +2378,8 @@ static_library("ui") {
+       "views/frame/browser_native_widget_factory_mac.mm",
+       "views/frame/browser_native_widget_mac.h",
+       "views/frame/browser_native_widget_mac.mm",
++      "views/frame/idaten_webkit_host_view.h",
++      "views/frame/idaten_webkit_host_view_mac.mm",
+       "views/frame/immersive_mode_controller_mac.h",
+       "views/frame/immersive_mode_controller_mac.mm",
+       "views/frame/immersive_mode_overlay_views_mac.h",
+@@ -2417,6 +2419,7 @@ static_library("ui") {
+     frameworks = [
+       "Carbon.framework",
+       "Quartz.framework",
++      "WebKit.framework",
+     ]
+   }
+ 
+--- a/chrome/browser/ui/navigator/browser_navigator.cc
++++ b/chrome/browser/ui/navigator/browser_navigator.cc
+@@ -11,10 +11,12 @@
+ #include <string_view>
+ #include <utility>
+ 
++#include "base/command_line.h"
+ #include "base/feature_list.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/notimplemented.h"
+ #include "base/notreached.h"
++#include "base/strings/escape.h"
+ #include "base/strings/utf_string_conversions.h"
+ #include "base/task/single_thread_task_runner.h"
+ #include "base/trace_event/trace_event.h"
+@@ -709,6 +711,23 @@ base::WeakPtr<content::NavigationHandle> NavigateImpl(
+     params->url = params->url.ReplaceComponents(replacements);
+   }
+ 
++  // Idaten WebKit tab PoC: "webkit:<http(s) url>" opens a placeholder tab
++  // (about:blank#idaten-webkit=<escaped url>) whose content area is drawn by
++  // WKWebView. See chrome/browser/ui/views/frame/idaten_webkit_host_view.h.
++  // Keep the switch name and prefix in sync with that file. Browser-initiated
++  // only, so a page cannot flip a tab into WebKit mode via window.open().
++  if (params->url.SchemeIs("webkit") && !params->is_renderer_initiated &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch(
++          "enable-idaten-webkit-tab")) {
++    std::string target = params->url.GetContent();
++    if (params->url.has_ref()) {
++      target += "#" + params->url.GetRef();
++    }
++    params->url = GURL(std::string(url::kAboutBlankURL) + "#idaten-webkit=" +
++                       base::EscapeAllExceptUnreserved(target));
++    params->transition = ui::PAGE_TRANSITION_AUTO_TOPLEVEL;
++  }
++
+   // Open System Apps in their standalone window if necessary.
+   // TODO(crbug.com/40136163): Remove this code after we integrate with intent
+   // handling.
+--- a/chrome/browser/ui/views/frame/contents_container_view.cc
++++ b/chrome/browser/ui/views/frame/contents_container_view.cc
+@@ -53,6 +53,11 @@
+ #include "ui/views/widget/native_widget_aura.h"
+ #endif
+ 
++#if BUILDFLAG(IS_MAC)
++#include "base/functional/bind.h"
++#include "chrome/browser/ui/views/frame/idaten_webkit_host_view.h"
++#endif
++
+ namespace {
+ constexpr int kSplitViewContentPadding = 2;
+ constexpr int kNewTabFooterSeparatorHeight = 1;
+@@ -88,6 +93,19 @@ ContentsContainerView::ContentsContainerView(BrowserView* browser_view)
+       base::FeatureList::IsEnabled(
+           features::kUseDefaultDeadlineWhenAnimatingBounds));
+ 
++#if BUILDFLAG(IS_MAC)
++  // Added right after |contents_view_| so the WKWebView NSView is ordered
++  // directly above the WebContents NSView (NativeWidgetMac reorders native
++  // subviews by views order).
++  if (idaten::IsWebKitTabEnabled()) {
++    idaten_webkit_host_ =
++        AddChildView(std::make_unique<IdatenWebKitHostView>());
++    contents_view_->SetIdatenWebContentsChangedCallback(base::BindRepeating(
++        &ContentsContainerView::OnIdatenActiveContentsChanged,
++        base::Unretained(this)));
++  }
++#endif
++
+   if (base::FeatureList::IsEnabled(ntp_features::kNtpFooter)) {
+     new_tab_footer_view_separator_ =
+         AddChildView(ContentsSeparator::CreateContentsSeparator());
+@@ -169,6 +187,10 @@ ContentsContainerView::ContentsContainerView(BrowserView* browser_view)
+ }
+ 
+ ContentsContainerView::~ContentsContainerView() {
++  // Children are destroyed after this body; make sure |contents_view_| can no
++  // longer call back into us or into |idaten_webkit_host_|.
++  contents_view_->SetIdatenWebContentsChangedCallback(base::RepeatingClosure());
++  idaten_webkit_host_ = nullptr;
+   indigo_overlay_view_ = nullptr;
+   // read_anything_immersive_overlay_view_ holds a raw_ptr to
+   // contents_view_. We need to make sure we destroy
+@@ -373,6 +395,15 @@ void ContentsContainerView::ChildVisibilityChanged(View* child) {
+   }
+ }
+ 
++void ContentsContainerView::OnIdatenActiveContentsChanged() {
++#if BUILDFLAG(IS_MAC)
++  if (idaten_webkit_host_) {
++    idaten_webkit_host_->UpdateForActiveContents(
++        contents_view_->web_contents());
++  }
++#endif
++}
++
+ void ContentsContainerView::Layout(PassKey pass_key) {
+   LayoutSuperclass<views::View>(this);
+ 
+@@ -581,6 +612,16 @@ views::ProposedLayout ContentsContainerView::CalculateProposedLayout(
+   layouts.child_layouts.emplace_back(
+       contents_view_.get(), contents_view_->GetVisible(), contents_rect);
+ 
++#if BUILDFLAG(IS_MAC)
++  if (idaten_webkit_host_) {
++    // Same rect as the placeholder WebContents; visibility is driven by
++    // IdatenWebKitHostView::UpdateForActiveContents().
++    layouts.child_layouts.emplace_back(idaten_webkit_host_.get(),
++                                       idaten_webkit_host_->GetVisible(),
++                                       contents_rect);
++  }
++#endif
++
+   layouts.child_layouts.emplace_back(
+       toast_anchor_view_.get(), toast_anchor_view_->GetVisible(),
+       gfx::BoundingRect(contents_rect.origin(), contents_rect.top_right()));
+--- a/chrome/browser/ui/views/frame/contents_container_view.h
++++ b/chrome/browser/ui/views/frame/contents_container_view.h
+@@ -21,6 +21,7 @@ class BrowserView;
+ class ContentsCaptureBorderView;
+ class ContentsContainerOutline;
+ class ContentsWebView;
++class IdatenWebKitHostView;
+ class ScrimView;
+ class ActorOverlayWebView;
+ class ReadAnythingImmersiveOverlayView;
+@@ -148,6 +149,9 @@ class ContentsContainerView : public views::View,
+  private:
+   void UpdateContentsClip();
+ 
++  // Called by |contents_view_| whenever its WebContents changes.
++  void OnIdatenActiveContentsChanged();
++
+   // Updates the DevTools docked placement. It infers the docked placement from
+   // the bounds of contents_webview relative to the local bounds of the
+   // container that holds both contents_webview and devtools_webview.
+@@ -183,6 +187,10 @@ class ContentsContainerView : public views::View,
+ 
+   raw_ptr<ContentsWebView> contents_view_ = nullptr;
+ 
++  // Idaten WebKit tab PoC (macOS only): sibling of |contents_view_| that shows
++  // a WKWebView in place of the placeholder WebContents. Null elsewhere.
++  raw_ptr<IdatenWebKitHostView> idaten_webkit_host_ = nullptr;
++
+   TabModalDialogHost web_contents_modal_dialog_host_;
+ 
+   // The view that contains devtools window for the WebContents.
+--- a/chrome/browser/ui/views/frame/contents_web_view.cc
++++ b/chrome/browser/ui/views/frame/contents_web_view.cc
+@@ -144,6 +144,9 @@ void ContentsWebView::OnLetterboxingChanged() {
+ 
+ void ContentsWebView::SetWebContents(content::WebContents* web_contents) {
+   views::WebView::SetWebContents(web_contents);
++  if (idaten_web_contents_changed_callback_) {
++    idaten_web_contents_changed_callback_.Run();
++  }
+   if (web_contents == nullptr) {
+     status_bubble_.reset();
+     holder()->SetProperty(views::kIsBlockedByModalKey, false);
+--- a/chrome/browser/ui/views/frame/contents_web_view.h
++++ b/chrome/browser/ui/views/frame/contents_web_view.h
+@@ -6,7 +6,9 @@
+ #define CHROME_BROWSER_UI_VIEWS_FRAME_CONTENTS_WEB_VIEW_H_
+ 
+ #include <memory>
++#include <utility>
+ 
++#include "base/functional/callback.h"
+ #include "base/memory/raw_ptr.h"
+ #include "build/build_config.h"
+ #include "chrome/browser/ui/views/frame/web_contents_close_handler_delegate.h"
+@@ -55,6 +57,12 @@ class ContentsWebView : public views::WebView,
+   // Update the blocked state based on the tab's modal dialog status.
+   void UpdateIsBlockedByModal();
+ 
++  // Idaten WebKit tab PoC: run after every SetWebContents() (including
++  // nullptr), so the owner can show/hide the WKWebView host.
++  void SetIdatenWebContentsChangedCallback(base::RepeatingClosure callback) {
++    idaten_web_contents_changed_callback_ = std::move(callback);
++  }
++
+   // WebView overrides:
+   bool GetNeedsNotificationWhenVisibleBoundsChange() const override;
+   void OnVisibleBoundsChanged() override;
+@@ -89,6 +97,8 @@ class ContentsWebView : public views::WebView,
+   bool use_default_deadline_when_animating_ = false;
+ 
+   std::unique_ptr<ui::LayerTreeOwner> cloned_layer_tree_;
++
++  base::RepeatingClosure idaten_web_contents_changed_callback_;
+ };
+ 
+ #endif  // CHROME_BROWSER_UI_VIEWS_FRAME_CONTENTS_WEB_VIEW_H_
+--- /dev/null
++++ b/chrome/browser/ui/views/frame/idaten_webkit_host_view.h
+@@ -0,0 +1,68 @@
++// Copyright 2026 The Idaten Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_VIEWS_FRAME_IDATEN_WEBKIT_HOST_VIEW_H_
++#define CHROME_BROWSER_UI_VIEWS_FRAME_IDATEN_WEBKIT_HOST_VIEW_H_
++
++#include "content/public/browser/web_contents_observer.h"
++#include "ui/base/metadata/metadata_header_macros.h"
++#include "ui/views/controls/native/native_view_host.h"
++#include "url/gurl.h"
++
++namespace content {
++class NavigationHandle;
++class WebContents;
++}  // namespace content
++
++namespace idaten {
++
++// PoC gate. Nothing in this file does anything unless the browser was started
++// with --enable-idaten-webkit-tab.
++inline constexpr char kWebKitTabSwitch[] = "enable-idaten-webkit-tab";
++
++// A WebKit tab is an ordinary Chromium tab whose (placeholder) WebContents has
++// committed "about:blank#idaten-webkit=<escaped http(s) URL>". The tab strip,
++// selection and closing keep working on the placeholder; only the content area
++// is covered by a WKWebView.
++inline constexpr char kWebKitTabRefPrefix[] = "idaten-webkit=";
++
++bool IsWebKitTabEnabled();
++
++// Returns the http(s) URL to show with WebKit, or an empty GURL if |contents|
++// is not a WebKit tab. Renderer-driven navigations (link / form / client
++// redirect transitions) are rejected.
++GURL GetWebKitTabTargetURL(content::WebContents* contents);
++
++}  // namespace idaten
++
++// Sibling of ContentsWebView inside ContentsContainerView. When the active
++// WebContents is a WebKit tab, attaches that tab's WKWebView and becomes
++// visible; otherwise detaches and hides. One WKWebView per WebContents is kept
++// alive as WebContentsUserData (see the .mm file).
++class IdatenWebKitHostView : public views::NativeViewHost,
++                             public content::WebContentsObserver {
++  METADATA_HEADER(IdatenWebKitHostView, views::NativeViewHost)
++
++ public:
++  IdatenWebKitHostView();
++  IdatenWebKitHostView(const IdatenWebKitHostView&) = delete;
++  IdatenWebKitHostView& operator=(const IdatenWebKitHostView&) = delete;
++  ~IdatenWebKitHostView() override;
++
++  // Called whenever the ContentsWebView's WebContents changes (tab switch,
++  // split view change, nullptr on teardown).
++  void UpdateForActiveContents(content::WebContents* contents);
++
++  // views::View:
++  void AddedToWidget() override;
++
++  // content::WebContentsObserver:
++  void DidFinishNavigation(content::NavigationHandle* handle) override;
++  void WebContentsDestroyed() override;
++
++ private:
++  void HideAndDetach();
++};
++
++#endif  // CHROME_BROWSER_UI_VIEWS_FRAME_IDATEN_WEBKIT_HOST_VIEW_H_
+--- /dev/null
++++ b/chrome/browser/ui/views/frame/idaten_webkit_host_view_mac.mm
+@@ -0,0 +1,180 @@
++// Copyright 2026 The Idaten Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#include "chrome/browser/ui/views/frame/idaten_webkit_host_view.h"
++
++#import <WebKit/WebKit.h>
++
++#include <string>
++#include <string_view>
++
++#include "base/command_line.h"
++#include "base/strings/escape.h"
++#include "base/strings/sys_string_conversions.h"
++#include "content/public/browser/navigation_controller.h"
++#include "content/public/browser/navigation_entry.h"
++#include "content/public/browser/navigation_handle.h"
++#include "content/public/browser/web_contents.h"
++#include "content/public/browser/web_contents_user_data.h"
++#include "ui/base/metadata/metadata_impl_macros.h"
++#include "ui/base/page_transition_types.h"
++#include "ui/gfx/native_ui_types.h"
++
++namespace idaten {
++
++bool IsWebKitTabEnabled() {
++  return base::CommandLine::ForCurrentProcess()->HasSwitch(kWebKitTabSwitch);
++}
++
++GURL GetWebKitTabTargetURL(content::WebContents* contents) {
++  if (!contents || !IsWebKitTabEnabled()) {
++    return GURL();
++  }
++  content::NavigationEntry* entry =
++      contents->GetController().GetLastCommittedEntry();
++  if (!entry || entry->IsInitialEntry()) {
++    return GURL();
++  }
++  const GURL& url = entry->GetURL();
++  if (!url.IsAboutBlank() || !url.has_ref()) {
++    return GURL();
++  }
++  const ui::PageTransition transition = entry->GetTransitionType();
++  if (ui::PageTransitionCoreTypeIs(transition, ui::PAGE_TRANSITION_LINK) ||
++      ui::PageTransitionCoreTypeIs(transition,
++                                   ui::PAGE_TRANSITION_FORM_SUBMIT) ||
++      (transition & ui::PAGE_TRANSITION_CLIENT_REDIRECT)) {
++    return GURL();
++  }
++  std::string_view ref = url.ref();
++  const std::string_view prefix(kWebKitTabRefPrefix);
++  if (!ref.starts_with(prefix)) {
++    return GURL();
++  }
++  GURL target(base::UnescapeBinaryURLComponent(ref.substr(prefix.size())));
++  if (!target.is_valid() || !target.SchemeIsHTTPOrHTTPS()) {
++    return GURL();
++  }
++  return target;
++}
++
++namespace {
++
++// Owns the WKWebView of one WebKit tab. Lives exactly as long as the
++// placeholder WebContents, so closing the tab (Chromium side) releases it.
++class WebKitTabData : public content::WebContentsUserData<WebKitTabData> {
++ public:
++  WebKitTabData(const WebKitTabData&) = delete;
++  WebKitTabData& operator=(const WebKitTabData&) = delete;
++  ~WebKitTabData() override {
++    [web_view_ stopLoading];
++    [web_view_ removeFromSuperview];
++  }
++
++  // Creates the WKWebView on first use and (re)loads when |target| changes.
++  NSView* GetViewFor(const GURL& target) {
++    if (!web_view_) {
++      WKWebViewConfiguration* config = [[WKWebViewConfiguration alloc] init];
++      // PoC: no persistent WebKit profile, nothing shared with Chromium's
++      // cookie jar.
++      config.websiteDataStore = [WKWebsiteDataStore nonPersistentDataStore];
++      web_view_ = [[WKWebView alloc] initWithFrame:NSZeroRect
++                                     configuration:config];
++    }
++    if (target != loaded_url_) {
++      loaded_url_ = target;
++      NSURL* ns_url =
++          [NSURL URLWithString:base::SysUTF8ToNSString(target.spec())];
++      if (ns_url) {
++        [web_view_ loadRequest:[NSURLRequest requestWithURL:ns_url]];
++      }
++    }
++    return web_view_;
++  }
++
++ private:
++  friend class content::WebContentsUserData<WebKitTabData>;
++
++  explicit WebKitTabData(content::WebContents* contents)
++      : content::WebContentsUserData<WebKitTabData>(*contents) {}
++
++  WKWebView* __strong web_view_ = nil;
++  GURL loaded_url_;
++
++  WEB_CONTENTS_USER_DATA_KEY_DECL();
++};
++
++WEB_CONTENTS_USER_DATA_KEY_IMPL(WebKitTabData);
++
++}  // namespace
++
++}  // namespace idaten
++
++IdatenWebKitHostView::IdatenWebKitHostView() {
++  SetVisible(false);
++}
++
++IdatenWebKitHostView::~IdatenWebKitHostView() {
++  // Take the WKWebView out of the window before the host goes away; the
++  // WKWebView itself stays owned by its WebContents.
++  Detach();
++}
++
++void IdatenWebKitHostView::UpdateForActiveContents(
++    content::WebContents* contents) {
++  if (web_contents() != contents) {
++    Observe(contents);
++  }
++  const GURL target = idaten::GetWebKitTabTargetURL(contents);
++  if (!target.is_valid()) {
++    HideAndDetach();
++    return;
++  }
++  // NativeViewHost::Attach() requires a Widget; AddedToWidget() retries.
++  if (!GetWidget()) {
++    return;
++  }
++  NSView* view =
++      idaten::WebKitTabData::GetOrCreateForWebContents(contents)->GetViewFor(
++          target);
++  if (native_view().GetNativeNSView() != view) {
++    if (native_view().GetNativeNSView()) {
++      Detach();
++    }
++    Attach(gfx::NativeView(view));
++  }
++  SetVisible(true);
++  if (parent()) {
++    parent()->InvalidateLayout();
++  }
++}
++
++void IdatenWebKitHostView::AddedToWidget() {
++  views::NativeViewHost::AddedToWidget();
++  if (web_contents()) {
++    UpdateForActiveContents(web_contents());
++  }
++}
++
++void IdatenWebKitHostView::DidFinishNavigation(
++    content::NavigationHandle* handle) {
++  if (!handle->IsInPrimaryMainFrame() || !handle->HasCommitted()) {
++    return;
++  }
++  // The placeholder may have been turned into (or out of) a WebKit tab.
++  UpdateForActiveContents(web_contents());
++}
++
++void IdatenWebKitHostView::WebContentsDestroyed() {
++  HideAndDetach();
++  Observe(nullptr);
++}
++
++void IdatenWebKitHostView::HideAndDetach() {
++  SetVisible(false);
++  Detach();  // No-op when nothing is attached.
++}
++
++BEGIN_METADATA(IdatenWebKitHostView)
++END_METADATA
