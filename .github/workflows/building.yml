@@ -6,6 +6,8 @@ defaults:
 
 permissions:
   contents: read
+  # Idaten: 以前の実行の成果物からコンパイル結果のキャッシュを読むため
+  actions: read
 
 on:
   workflow_call:
