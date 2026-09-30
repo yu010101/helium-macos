@@ -284,7 +284,7 @@
 +#endif  // CHROME_BROWSER_UI_VIEWS_FRAME_IDATEN_WEBKIT_HOST_VIEW_H_
 --- /dev/null
 +++ b/chrome/browser/ui/views/frame/idaten_webkit_host_view_mac.mm
-@@ -0,0 +1,180 @@
+@@ -0,0 +1,393 @@
 +// Copyright 2026 The Idaten Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -293,12 +293,26 @@
 +
 +#import <WebKit/WebKit.h>
 +
++#include <optional>
 +#include <string>
 +#include <string_view>
++#include <utility>
++#include <vector>
 +
 +#include "base/command_line.h"
++#include "base/files/file_enumerator.h"
++#include "base/files/file_path.h"
++#include "base/files/file_util.h"
++#include "base/functional/bind.h"
++#include "base/functional/callback.h"
++#include "base/functional/callback_helpers.h"
++#include "base/logging.h"
++#include "base/memory/weak_ptr.h"
++#include "base/no_destructor.h"
 +#include "base/strings/escape.h"
++#include "base/strings/string_number_conversions.h"
 +#include "base/strings/sys_string_conversions.h"
++#include "base/task/thread_pool.h"
 +#include "content/public/browser/navigation_controller.h"
 +#include "content/public/browser/navigation_entry.h"
 +#include "content/public/browser/navigation_handle.h"
@@ -348,6 +362,176 @@
 +
 +namespace {
 +
++// --idaten-webkit-rules=<dir>: every <dir>/*.json is compiled into a
++// WKContentRuleList and added to each WebKit tab before its first load.
++constexpr char kWebKitRulesSwitch[] = "idaten-webkit-rules";
++
++// Same suffix as the Swift Idaten (Settings.userAgentSuffix), so WebKit tabs
++// present a Safari-like UA.
++constexpr char kSafariUserAgentSuffix[] = "Version/26.0 Safari/605.1.15";
++
++struct RuleFile {
++  std::string identifier;  // Changes whenever the file's size or mtime does.
++  base::FilePath path;
++};
++
++// Runs on the thread pool (blocking I/O).
++std::vector<RuleFile> ListRuleFiles(const base::FilePath& dir) {
++  std::vector<RuleFile> files;
++  base::FileEnumerator e(dir, /*recursive=*/false, base::FileEnumerator::FILES,
++                         FILE_PATH_LITERAL("*.json"));
++  for (base::FilePath path = e.Next(); !path.empty(); path = e.Next()) {
++    const base::FileEnumerator::FileInfo info = e.GetInfo();
++    files.push_back(
++        {"idaten-" + path.BaseName().RemoveExtension().value() + "-" +
++             base::NumberToString(info.GetSize()) + "-" +
++             base::NumberToString(info.GetLastModifiedTime().ToTimeT()),
++         path});
++  }
++  return files;
++}
++
++// Runs on the thread pool (blocking I/O). easylist.json is ~12 MB.
++std::optional<std::string> ReadRuleFile(const base::FilePath& path) {
++  std::string json;
++  if (!base::ReadFileToString(path, &json)) {
++    return std::nullopt;
++  }
++  return json;
++}
++
++// Process-wide, compiled once. Lookup by identifier first so that WebKit's own
++// on-disk cache (WKContentRuleListStore.defaultStore) skips recompiling and
++// the 12 MB file is only read when the identifier is new.
++class WebKitRuleLists {
++ public:
++  static WebKitRuleLists* GetInstance() {
++    static base::NoDestructor<WebKitRuleLists> instance;
++    return instance.get();
++  }
++
++  // Runs |done| once every rule list has been compiled (or has failed). Runs
++  // synchronously when the switch is absent or loading already finished.
++  void WhenReady(base::OnceClosure done) {
++    if (state_ == State::kReady) {
++      std::move(done).Run();
++      return;
++    }
++    waiters_.push_back(std::move(done));
++    if (state_ == State::kIdle) {
++      Start();
++    }
++  }
++
++  NSArray<WKContentRuleList*>* lists() const { return lists_; }
++
++ private:
++  friend class base::NoDestructor<WebKitRuleLists>;
++  enum class State { kIdle, kLoading, kReady };
++
++  WebKitRuleLists() = default;
++
++  void Start() {
++    const base::FilePath dir =
++        base::CommandLine::ForCurrentProcess()->GetSwitchValuePath(
++            kWebKitRulesSwitch);
++    if (dir.empty()) {
++      Finish();  // No switch: behave exactly as before (no rules).
++      return;
++    }
++    state_ = State::kLoading;
++    base::ThreadPool::PostTaskAndReplyWithResult(
++        FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
++        base::BindOnce(&ListRuleFiles, dir),
++        base::BindOnce(&WebKitRuleLists::OnRuleFilesListed,
++                       base::Unretained(this)));
++  }
++
++  void OnRuleFilesListed(std::vector<RuleFile> files) {
++    if (files.empty()) {
++      LOG(WARNING) << "idaten-webkit-rules: no *.json found";
++      Finish();
++      return;
++    }
++    pending_ = files.size();
++    WKContentRuleListStore* store = [WKContentRuleListStore defaultStore];
++    for (RuleFile& file : files) {
++      NSString* identifier = base::SysUTF8ToNSString(file.identifier);
++      base::FilePath path = file.path;
++      [store lookUpContentRuleListForIdentifier:identifier
++                              completionHandler:^(WKContentRuleList* cached,
++                                                  NSError* error) {
++                                dispatch_async(dispatch_get_main_queue(), ^{
++                                  if (cached) {
++                                    this->OnOneFinished(identifier, cached,
++                                                        nil);
++                                  } else {
++                                    this->ReadAndCompile(identifier, path);
++                                  }
++                                });
++                              }];
++    }
++  }
++
++  void ReadAndCompile(NSString* identifier, const base::FilePath& path) {
++    base::ThreadPool::PostTaskAndReplyWithResult(
++        FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
++        base::BindOnce(&ReadRuleFile, path),
++        base::BindOnce(&WebKitRuleLists::OnRuleFileRead,
++                       base::Unretained(this),
++                       base::SysNSStringToUTF8(identifier)));
++  }
++
++  void OnRuleFileRead(const std::string& identifier_utf8,
++                      std::optional<std::string> json) {
++    NSString* identifier = base::SysUTF8ToNSString(identifier_utf8);
++    if (!json) {
++      LOG(ERROR) << "idaten-webkit-rules: cannot read " << identifier_utf8;
++      OnOneFinished(identifier, nil, nil);
++      return;
++    }
++    [[WKContentRuleListStore defaultStore]
++        compileContentRuleListForIdentifier:identifier
++                     encodedContentRuleList:base::SysUTF8ToNSString(*json)
++                          completionHandler:^(WKContentRuleList* list,
++                                              NSError* error) {
++                            dispatch_async(dispatch_get_main_queue(), ^{
++                              this->OnOneFinished(identifier, list, error);
++                            });
++                          }];
++  }
++
++  void OnOneFinished(NSString* identifier,
++                     WKContentRuleList* list,
++                     NSError* error) {
++    if (list) {
++      [lists_ addObject:list];
++      LOG(WARNING) << "idaten-webkit-rules: ready "
++                   << base::SysNSStringToUTF8(identifier);
++    } else {
++      LOG(ERROR) << "idaten-webkit-rules: failed "
++                 << base::SysNSStringToUTF8(identifier) << ": "
++                 << base::SysNSStringToUTF8(error.localizedDescription ?: @"");
++    }
++    if (--pending_ == 0) {
++      Finish();
++    }
++  }
++
++  void Finish() {
++    state_ = State::kReady;
++    std::vector<base::OnceClosure> waiters = std::move(waiters_);
++    for (base::OnceClosure& waiter : waiters) {
++      std::move(waiter).Run();
++    }
++  }
++
++  State state_ = State::kIdle;
++  size_t pending_ = 0;
++  NSMutableArray<WKContentRuleList*>* __strong lists_ = [NSMutableArray array];
++  std::vector<base::OnceClosure> waiters_;
++};
++
 +// Owns the WKWebView of one WebKit tab. Lives exactly as long as the
 +// placeholder WebContents, so closing the tab (Chromium side) releases it.
 +class WebKitTabData : public content::WebContentsUserData<WebKitTabData> {
@@ -360,22 +544,26 @@
 +  }
 +
 +  // Creates the WKWebView on first use and (re)loads when |target| changes.
++  // The load itself waits until the content rule lists are attached, so the
++  // first navigation is already filtered.
 +  NSView* GetViewFor(const GURL& target) {
 +    if (!web_view_) {
 +      WKWebViewConfiguration* config = [[WKWebViewConfiguration alloc] init];
 +      // PoC: no persistent WebKit profile, nothing shared with Chromium's
 +      // cookie jar.
 +      config.websiteDataStore = [WKWebsiteDataStore nonPersistentDataStore];
++      config.applicationNameForUserAgent =
++          base::SysUTF8ToNSString(kSafariUserAgentSuffix);
++      // Keep our own reference: WKWebView.configuration returns a copy, but
++      // the WKUserContentController inside it is shared with the web view.
++      user_content_controller_ = config.userContentController;
 +      web_view_ = [[WKWebView alloc] initWithFrame:NSZeroRect
 +                                     configuration:config];
 +    }
-+    if (target != loaded_url_) {
-+      loaded_url_ = target;
-+      NSURL* ns_url =
-+          [NSURL URLWithString:base::SysUTF8ToNSString(target.spec())];
-+      if (ns_url) {
-+        [web_view_ loadRequest:[NSURLRequest requestWithURL:ns_url]];
-+      }
++    if (target != requested_url_) {
++      requested_url_ = target;
++      WebKitRuleLists::GetInstance()->WhenReady(base::BindOnce(
++          &WebKitTabData::OnRulesReady, weak_factory_.GetWeakPtr()));
 +    }
 +    return web_view_;
 +  }
@@ -386,8 +574,30 @@
 +  explicit WebKitTabData(content::WebContents* contents)
 +      : content::WebContentsUserData<WebKitTabData>(*contents) {}
 +
++  void OnRulesReady() {
++    if (!rules_attached_) {
++      rules_attached_ = true;
++      for (WKContentRuleList* list in WebKitRuleLists::GetInstance()->lists()) {
++        [user_content_controller_ addContentRuleList:list];
++      }
++    }
++    if (requested_url_ == loaded_url_) {
++      return;  // Several WhenReady() callbacks may be queued.
++    }
++    loaded_url_ = requested_url_;
++    NSURL* ns_url =
++        [NSURL URLWithString:base::SysUTF8ToNSString(loaded_url_.spec())];
++    if (ns_url) {
++      [web_view_ loadRequest:[NSURLRequest requestWithURL:ns_url]];
++    }
++  }
++
 +  WKWebView* __strong web_view_ = nil;
++  WKUserContentController* __strong user_content_controller_ = nil;
++  GURL requested_url_;
 +  GURL loaded_url_;
++  bool rules_attached_ = false;
++  base::WeakPtrFactory<WebKitTabData> weak_factory_{this};
 +
 +  WEB_CONTENTS_USER_DATA_KEY_DECL();
 +};
@@ -400,6 +610,9 @@
 +
 +IdatenWebKitHostView::IdatenWebKitHostView() {
 +  SetVisible(false);
++  // Start compiling/looking up the rule lists as soon as a browser window
++  // exists, so the first WebKit tab rarely has to wait for them.
++  idaten::WebKitRuleLists::GetInstance()->WhenReady(base::DoNothing());
 +}
 +
 +IdatenWebKitHostView::~IdatenWebKitHostView() {
